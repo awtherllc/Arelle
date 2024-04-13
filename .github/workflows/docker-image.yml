@@ -24,7 +24,16 @@ jobs:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Set output
+      id: vars
+      run: echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
+    - name: Check output
+      env:
+        RELEASE_VERSION: ${{ steps.vars.outputs.tag }}
+      run: |
+        echo $RELEASE_VERSION
+        echo ${{ steps.vars.outputs.tag }}        
     - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag ghcr.io/awtherllc/arelle:${{ ${{ github.ref_name }} }}
+      run: docker build . --file Dockerfile --tag ghcr.io/awtherllc/arelle:$RELEASE_VERSION
     - name: Publish the Docker image
-      run: docker push ghcr.io/awtherllc/arelle:${{ ${{ github.ref_name }} }}
+      run: docker push ghcr.io/awtherllc/arelle:$RELEASE_VERSION
