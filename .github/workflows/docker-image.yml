@@ -25,6 +25,6 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag ghcr.io/awtherllc/arelle:${{ github.event.release.tag_name }}
+      run: docker build . --file Dockerfile --tag ghcr.io/awtherllc/arelle:${{ ${{ github.ref_name }} }}
     - name: Publish the Docker image
-      run: docker push ghcr.io/awtherllc/arelle:${{ github.event.release.tag_name }}
+      run: docker push ghcr.io/awtherllc/arelle:${{ ${{ github.ref_name }} }}
