@@ -7,11 +7,13 @@ import datetime
 import itertools
 from typing import Iterable, Callable, cast, Union
 
+from arelle.ModelDocument import ModelDocument
 from arelle.ModelInstanceObject import ModelFact
 from arelle.ModelValue import QName
 from arelle.ModelXbrl import ModelXbrl
 from arelle.XmlValidateConst import VALID
 from arelle.utils.validate.Validation import Validation
+from arelle.ValidateXbrl import ValidateXbrl
 
 
 def errorOnDateFactComparison(
@@ -49,6 +51,75 @@ def errorOnDateFactComparison(
             fact1=fact1.xValue,
             fact2=fact2.xValue,
         )
+
+
+def errorOnRequiredFact(
+        modelXbrl: ModelXbrl,
+        factQn: QName,
+        code: str,
+        message: str,
+) -> Iterable[Validation]:
+    """
+    Yields an error if a fact with the given QName is not tagged with a non-nil value.
+    :return: Yields validation errors.
+    """
+    facts: set[ModelFact] = modelXbrl.factsByQname.get(factQn, set())
+    if facts:
+        for fact in facts:
+            if not fact.isNil:
+                return
+    yield Validation.error(
+        codes=code,
+        msg=message,
+)
+
+
+def errorOnRequiredPositiveFact(
+        modelXbrl: ModelXbrl,
+        facts: set[ModelFact],
+        code: str,
+        message: str,
+) -> Iterable[Validation]:
+    """
+    Yields an error if a fact with the given QName is not tagged with a valid date and a non-nil value.
+    :return: Yields validation errors.
+    """
+    errorModelObjects: list[ModelFact | ModelDocument| None] = []
+    if not facts:
+        errorModelObjects.append(modelXbrl.modelDocument)
+    else:
+        for fact in facts:
+            if fact.xValid >= VALID and cast(int, fact.xValue) < 0:
+                errorModelObjects.append(fact)
+    if errorModelObjects:
+        yield Validation.error(
+            codes=code,
+            msg=message,
+            modelObject=errorModelObjects
+        )
+
+
+def getFactsWithDimension(
+        val: ValidateXbrl,
+        conceptQn: QName,
+        dimensionQn: QName,
+        membeQn: QName
+) -> set[ModelFact ]:
+    foundFacts: set[ModelFact] = set()
+    facts = val.modelXbrl.factsByQname.get(conceptQn)
+    if facts:
+        for fact in facts:
+            if fact is not None:
+                if fact.context is None:
+                    continue
+                elif (fact.context.dimMemberQname(
+                        dimensionQn
+                ) == membeQn
+                      and fact.context.qnameDims.keys() == {dimensionQn}):
+                    foundFacts.add(fact)
+                elif not len(fact.context.qnameDims):
+                    foundFacts.add(fact)
+    return foundFacts
 
 
 def getValidDateFacts(
@@ -95,3 +166,17 @@ def getValidDateFactsWithDefaultDimension(
         if memberQn is None or memberQn == factMemberQn:
             results.append(fact)
     return results
+
+
+def getFactsGroupedByContextId(modelXbrl: ModelXbrl, *conceptQns: QName) -> dict[str, list[ModelFact]]:
+    """
+    Groups facts by their context ID.
+    :return: A dictionary of context ID to list of facts.
+    """
+    facts: set[ModelFact] = set()
+    for conceptQn in conceptQns:
+        facts.update(modelXbrl.factsByQname.get(conceptQn, set()))
+    return {
+        k: sorted(v, key=lambda f: f.objectIndex)
+        for k, v in itertools.groupby(facts, key=lambda f: f.contextID)
+    }

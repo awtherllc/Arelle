@@ -8,12 +8,14 @@ See COPYRIGHT.md for copyright information.
 from __future__ import annotations
 from arelle import ValidateDuplicateFacts
 import gettext, time, datetime, os, shlex, sys, traceback, fnmatch, threading, json, logging, platform
-from optparse import OptionGroup, OptionParser, SUPPRESS_HELP
+from optparse import OptionGroup, OptionParser, SUPPRESS_HELP, Option
 import regex as re
-from arelle import (Cntlr, FileSource, ModelDocument, RenderingEvaluator, XmlUtil, XbrlConst, Version,
+from arelle import (Cntlr, FileSource, ModelDocument, XmlUtil, XbrlConst, Version,
                     ViewFileDTS, ViewFileFactList, ViewFileFactTable, ViewFileConcepts,
                     ViewFileFormulae, ViewFileRelationshipSet, ViewFileTests, ViewFileRssFeed,
                     ViewFileRoleTypes)
+from arelle.oim.xml.Save import saveOimReportToXmlInstance
+from arelle.rendering import RenderingEvaluator
 from arelle.RuntimeOptions import RuntimeOptions, RuntimeOptionsException
 from arelle.BetaFeatures import BETA_FEATURES_AND_DESCRIPTIONS
 from arelle.ModelValue import qname
@@ -90,7 +92,7 @@ def parseArgs(args):
             break
     # Check if the config cache needs to be disabled prior to initializing the cntlr
     disable_persistent_config = bool({DISABLE_PERSISTENT_CONFIG_OPTION, DISABLE_PERSISTENT_CONFIG_OPTION.lower()} & set(args))
-    cntlr = createCntlrAndPreloadPlugins(uiLang, disable_persistent_config, {})  # This Cntlr is needed for translations and to enable the web cache.  The cntlr is not used outside the parse function
+    cntlr = CntlrCmdLine(uiLang=uiLang, disable_persistent_config=disable_persistent_config)  # This Cntlr is needed for translations and to enable the web cache.  The cntlr is not used outside the parse function
     usage = "usage: %prog [options]"
     parser = OptionParser(usage,
                           version="Arelle(r) {0} ({1}bit)".format(Version.__version__, getSystemWordSize()),
@@ -134,6 +136,14 @@ def parseArgs(args):
                       choices=[a.value for a in ValidateDuplicateFacts.DUPLICATE_TYPE_ARG_MAP],
                       dest="validateDuplicateFacts",
                       help=_("Select which types of duplicates should trigger warnings."))
+    parser.add_option("--saveOIMToXMLReport", "--saveoimtoxmlreport", "--saveOIMinstance", "--saveoiminstance",
+                      action="store",
+                      dest="saveOIMToXMLReport",
+                      help=_("Save a report loaded from OIM into this file XML file name."))
+    parser.add_option("--validateXmlOim", "--validatexmloim", "--oim",
+                      action="store_true",
+                      dest="validateXmlOim",
+                      help=_("Enables OIM validation for XML and iXBRL documents. OIM only formats (json, csv) are always OIM validated."))
     parser.add_option("--deduplicateFacts", "--deduplicatefacts",
                       choices=[a.value for a in ValidateDuplicateFacts.DeduplicationType],
                       dest="deduplicateFacts",
@@ -175,7 +185,7 @@ def parseArgs(args):
                              " select disclosure system validation.  "
                              "Enter --disclosureSystem=help for list of names or help-verbose for list of names and descriptions. "))
     parser.add_option("--hmrc", action="store_true", dest="validateHMRC",
-                      help=_("Select U.K. HMRC disclosure system validation."))
+                      help=_("Select HMRC disclosure system validation."))
     parser.add_option("--utr", action="store_true", dest="utrValidate",
                       help=_("Select validation with respect to Unit Type Registry."))
     parser.add_option("--utrUrl", "--utrurl", action="store", dest="utrUrl",
@@ -255,6 +265,8 @@ def parseArgs(args):
                       help=_("Log reference object properties (default)."), default=True)
     parser.add_option("--logNoRefObjectProperties", "--lognorefobjectproperties", action="store_false", dest="logRefObjectProperties",
                       help=_("Do not log reference object properties."))
+    parser.add_option("--logXmlMaxAttributeLength", "--logxmlmaxattributelength", action="store", dest="logXmlMaxAttributeLength", type="int",
+                      help=_("Truncate XML log file attribute values at length. The default is 4096000 for JSON content and 128 for everything else."))
     parser.add_option("--statusPipe", action="store", dest="statusPipe", help=SUPPRESS_HELP)
     parser.add_option("--monitorParentProcess", action="store", dest="monitorParentProcess", help=SUPPRESS_HELP)
     parser.add_option("--outputAttribution", "--outputattribution", action="store", dest="outputAttribution", help=SUPPRESS_HELP)
@@ -319,6 +331,8 @@ def parseArgs(args):
                       help=_("Specify no checking of internet secure connection certificate"))
     parser.add_option("--httpsRedirectCache", "--httpsredirectcache", action="store_true", dest="httpsRedirectCache",
                       help=_("Treat http and https schemes interchangeably when looking up files from the webcache"))
+    parser.add_option("--cacheDirectory", "--cachedirectory", action="store", dest="cacheDirectory",
+                      help=_("Override the default location of the cache directory"))
     parser.add_option("--httpUserAgent", "--httpuseragent", action="store", dest="httpUserAgent",
                       help=_("Specify non-standard http header User-Agent value"))
     parser.add_option(DISABLE_PERSISTENT_CONFIG_OPTION, DISABLE_PERSISTENT_CONFIG_OPTION.lower(), action="store_true", dest="disablePersistentConfig", help=_("Prohibits Arelle from reading and writing a config to the local cache."))
@@ -476,7 +490,7 @@ def parseArgs(args):
     return runtimeOptions, arellePluginModules
 
 
-def createCntlrAndPreloadPlugins(uiLang, disablePersistentConfig, arellePluginModules):
+def createCntlrAndPreloadPlugins(uiLang, disablePersistentConfig, arellePluginModules) -> CntlrCmdLine:
     """
     This function creates a cntlr and preloads all the necessary plugins.
     :param uiLang: The UI Language
@@ -515,7 +529,9 @@ def configAndRunCntlr(options, arellePluginModules):
                            logLevel=(options.logLevel or "DEBUG"),
                            logToBuffer=getattr(options, "logToBuffer", False),
                            logTextMaxLength=options.logTextMaxLength,  # e.g., used by EdgarRenderer to require buffered logging
-                           logRefObjectProperties=options.logRefObjectProperties)
+                           logRefObjectProperties=options.logRefObjectProperties,
+                           logXmlMaxAttributeLength=options.logXmlMaxAttributeLength,
+                           logPropagate=options.logPropagate)
         cntlr.postLoggingInit()  # Cntlr options after logging is started
         cntlr.run(options)
         return cntlr
@@ -525,13 +541,9 @@ def filesourceEntrypointFiles(filesource, entrypointFiles=[], inlineOnly=False):
     if filesource.isArchive:
         if filesource.isTaxonomyPackage:  # if archive is also a taxonomy package, activate mappings
             filesource.loadTaxonomyPackageMappings()
+        # HF note: a web api request to load a specific file from archive is ignored, is this right?
         del entrypointFiles[:] # clear out archive from entrypointFiles
         # attempt to find inline XBRL files before instance files, .xhtml before probing others (ESMA)
-        for _archiveFile in (filesource.dir or ()): # .dir might be none if IOerror
-            if _archiveFile.endswith(".xhtml") or _archiveFile.endswith(".html"):
-                filesource.select(_archiveFile)
-                if ModelDocument.Type.identify(filesource, filesource.url) in (ModelDocument.Type.INSTANCE, ModelDocument.Type.INLINEXBRL):
-                    entrypointFiles.append({"file":filesource.url})
         urlsByType = {}
         if not entrypointFiles:
             for _archiveFile in (filesource.dir or ()): # .dir might be none if IOerror
@@ -556,20 +568,41 @@ def filesourceEntrypointFiles(filesource, entrypointFiles=[], inlineOnly=False):
 
     elif os.path.isdir(filesource.url):
         del entrypointFiles[:] # clear list
+        hasInline = False
         for _file in os.listdir(filesource.url):
             _path = os.path.join(filesource.url, _file)
-            if os.path.isfile(_path) and ModelDocument.Type.identify(filesource, _path) in (ModelDocument.Type.INSTANCE, ModelDocument.Type.INLINEXBRL):
-                entrypointFiles.append({"file":_path})
+            if os.path.isfile(_path):
+                identifiedType = ModelDocument.Type.identify(filesource, _path)
+                if identifiedType == ModelDocument.Type.INLINEXBRL:
+                    hasInline = True
+                if identifiedType in (ModelDocument.Type.INSTANCE, ModelDocument.Type.INLINEXBRL):
+                    entrypointFiles.append({"file":_path})
+        if hasInline: # group into IXDS if plugin feature is available
+            for pluginXbrlMethod in pluginClassMethods("InlineDocumentSet.Discovery"):
+                pluginXbrlMethod(filesource, entrypointFiles)
+
     return entrypointFiles
 
 class ParserForDynamicPlugins:
     def __init__(self, options):
+        self._long_opt = {}
+        self._short_opt = {}
+        self.conflict_handler = 'error'
+        self.defaults = {}
+        self.option_class = Option
         self.options = options
+
     def add_option(self, *args, **kwargs):
         if 'dest' in kwargs:
             _dest = kwargs['dest']
             if not hasattr(self.options, _dest):
                 setattr(self.options, _dest, kwargs.get('default',None))
+
+    def add_option_group(self, *args, **kwargs):
+        pass
+
+    def __getattr__(self, name: str) -> None:
+        return None
 
 class CntlrCmdLine(Cntlr.Cntlr):
     """
@@ -582,7 +615,7 @@ class CntlrCmdLine(Cntlr.Cntlr):
         super(CntlrCmdLine, self).__init__(hasGui=False, uiLang=uiLang, disable_persistent_config=disable_persistent_config)
         self.preloadedPlugins =  {}
 
-    def run(self, options, sourceZipStream=None, responseZipStream=None) -> bool:
+    def run(self, options: RuntimeOptions, sourceZipStream=None, responseZipStream=None) -> bool:
         """Process command line arguments or web service request, such as to load and validate an XBRL document, or start web server.
 
         When a web server has been requested, this method may be called multiple times, once for each web service (REST) request that requires processing.
@@ -666,6 +699,11 @@ class CntlrCmdLine(Cntlr.Cntlr):
             self.webCache.httpsRedirect = options.httpsRedirectCache
         if options.httpUserAgent:
             self.webCache.httpUserAgent = options.httpUserAgent
+        if options.redirectFallbacks:
+            for matchPattern, replaceFormat in options.redirectFallbacks.items():
+                self.webCache.redirectFallback(matchPattern, replaceFormat)
+        if options.cacheDirectory:
+            self.webCache.cacheDir = options.cacheDirectory
         if options.plugins:
             resetPlugins = False
             savePluginChanges = True
@@ -763,6 +801,7 @@ class CntlrCmdLine(Cntlr.Cntlr):
         else:
             self.modelManager.disclosureSystem.select(None) # just load ordinary mappings
             self.modelManager.validateDisclosureSystem = False
+        self.modelManager.validateXmlOim = bool(options.validateXmlOim)
         if options.validateDuplicateFacts:
             duplicateTypeArg = ValidateDuplicateFacts.DuplicateTypeArg(options.validateDuplicateFacts)
             duplicateType = duplicateTypeArg.duplicateType()
@@ -993,6 +1032,15 @@ class CntlrCmdLine(Cntlr.Cntlr):
                 else: # not a test case, probably instance or DTS
                     for pluginXbrlMethod in pluginClassMethods("CntlrCmdLine.Xbrl.Loaded"):
                         pluginXbrlMethod(self, options, modelXbrl, _entrypoint, responseZipStream=responseZipStream)
+                    if options.saveOIMToXMLReport:
+                        if modelXbrl.loadedFromOIM and modelXbrl.modelDocument is not None:
+                            self.showStatus(_("Saving XBRL instance: {0}").format(modelXbrl.modelDocument.basename))
+                            saveOimReportToXmlInstance(modelXbrl.modelDocument, options.saveOIMToXMLReport, responseZipStream)
+                        else:
+                            self.addToLog(_("Report not loaded from OIM, not saving xBRL-XML report."),
+                                        messageCode="NotOim",
+                                        level=logging.INFO)
+
             else:
                 success = False
             if success and options.diffFile and options.versReportFile:
@@ -1083,7 +1131,7 @@ class CntlrCmdLine(Cntlr.Cntlr):
                         if options.tableFile:
                             ViewFileRelationshipSet.viewRelationshipSet(modelXbrl, options.tableFile, "Table Linkbase", "Table-rendering", labelrole=options.labelRole, lang=options.labelLang)
                         if options.calFile:
-                            ViewFileRelationshipSet.viewRelationshipSet(modelXbrl, options.calFile, "Calculation Linkbase", XbrlConst.summationItem, labelrole=options.labelRole, lang=options.labelLang, cols=options.relationshipCols)
+                            ViewFileRelationshipSet.viewRelationshipSet(modelXbrl, options.calFile, "Calculation Linkbase", XbrlConst.summationItems, labelrole=options.labelRole, lang=options.labelLang, cols=options.relationshipCols)
                         if options.dimFile:
                             ViewFileRelationshipSet.viewRelationshipSet(modelXbrl, options.dimFile, "Dimensions", "XBRL-dimensions", labelrole=options.labelRole, lang=options.labelLang, cols=options.relationshipCols)
                         if options.anchFile:

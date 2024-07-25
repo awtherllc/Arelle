@@ -5,13 +5,16 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from collections import defaultdict
+from contextlib import contextmanager
 from os import linesep
 from pathlib import Path
 from typing import cast, Iterable, Any
 
 import regex
 from lxml import etree
+from lxml.etree import _ElementTree
 
 from tests.integration_tests.download_cache import download_and_apply_cache
 
@@ -60,20 +63,21 @@ def parse_args(
     return parsed_args
 
 
-def prepare_logfile(working_directory: Path, script_path: Path, name: str | None = None) -> Path:
+def prepare_logfile(working_directory: Path, script_path: Path, name: str | None = None, ext: str = 'xml') -> Path:
     name_part = "" if name is None else f".{name}"
-    logfile_path = working_directory.joinpath(script_path.stem).with_suffix(f"{name_part}.logfile.xml")
+    logfile_path = working_directory.joinpath(script_path.stem).with_suffix(f"{name_part}.logfile.{ext}")
     logfile_path.unlink(missing_ok=True)
     return logfile_path
 
 
-def run_arelle(
+def _get_arelle_args(
     arelle_command: str,
     plugins: list[str] | None = None,
     additional_args: list[str] | None = None,
     offline: bool = False,
     logFile: Path | None = None,
-) -> None:
+    logFormat: str = "[%(messageCode)s] %(message)s - %(file)s",
+) -> list[str]:
     if os.name == 'nt':
         args = [sys.executable if w == 'python' else w for w in arelle_command.split()]
     else:
@@ -85,8 +89,49 @@ def run_arelle(
     args.extend(additional_args or [])
     if logFile:
         args.extend(["--logFile", str(logFile)])
+        args.extend(["--logFormat", logFormat])
+    return args
+
+
+def run_arelle(
+    arelle_command: str,
+    plugins: list[str] | None = None,
+    additional_args: list[str] | None = None,
+    offline: bool = False,
+    logFile: Path | None = None,
+    logFormat: str = "[%(messageCode)s] %(message)s - %(file)s",
+) -> None:
+    args = _get_arelle_args(
+        arelle_command, plugins, additional_args,
+        offline, logFile, logFormat
+    )
     result = subprocess.run(args, capture_output=True)
     assert result.returncode == 0, result.stderr.decode().strip()
+
+
+@contextmanager
+def run_arelle_webserver(
+    arelle_command: str,
+    port: int = 8080,
+    plugins: list[str] | None = None,
+    additional_args: list[str] | None = None,
+    offline: bool = False,
+):
+    additional_args = ["--webserver", f"localhost:{port}"] + (additional_args or [])
+    args = _get_arelle_args(arelle_command, plugins, additional_args, offline)
+    proc = None
+    try:
+        print(f"Starting web server on port {port}...")
+        proc = subprocess.Popen(args)
+        print("Waiting 2 seconds for web server to be ready...")
+        time.sleep(2)  # TODO: capture process output and wait for "Listening" message
+        print("Web server ready.")
+        yield proc
+    finally:
+        print("Exiting web server...")
+        if proc:
+            proc.kill()
+        print("Web server exited.")
 
 
 def validate_log_file(
@@ -95,10 +140,17 @@ def validate_log_file(
 ) -> list[str]:
     if not logfile_path.exists():
         return [f'Log file "{logfile_path}" not found.']
+    tree = etree.parse(logfile_path)
+    return validate_log_tree(tree, expected_results)
+
+
+def validate_log_tree(
+        tree: _ElementTree,
+        expected_results: dict[str, dict[regex.Pattern[str], int]] | None = None,
+) -> list[str]:
     expected_results = expected_results or {}
     if "error" not in expected_results:
         expected_results["error"] = {}
-    tree = etree.parse(logfile_path)
     level_messages = {}
     for level in expected_results:
         level_messages[level] = cast(Iterable[Any], tree.xpath(f"//log/entry[@level='{level}']/message/text()"))
@@ -118,3 +170,11 @@ def validate_log_file(
             if actual_count != expected_count:
                 results.append(f'Expected {expected_count} occurrence(s) of {level} "{pattern}" but found {actual_count}.')
     return results
+
+
+def validate_log_xml(
+        xml: str,
+        expected_results: dict[str, dict[regex.Pattern[str], int]] | None = None,
+) -> list[str]:
+    tree = etree.fromstring(xml)
+    return validate_log_tree(tree.getroottree(), expected_results)

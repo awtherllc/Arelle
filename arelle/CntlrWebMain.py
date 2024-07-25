@@ -16,11 +16,12 @@ from collections.abc import Iterable
 from copy import deepcopy
 
 from arelle import Version
-from arelle.Cntlr import LogFormatter, LogToBufferHandler
 from arelle.CntlrCmdLine import CntlrCmdLine
 from arelle.FileSource import FileNamedStringIO
 from arelle.PluginManager import pluginClassMethods
 from arelle.RuntimeOptions import RuntimeOptions
+from arelle.logging.formatters.LogFormatter import LogFormatter
+from arelle.logging.handlers.LogToBufferHandler import LogToBufferHandler
 from arelle.typing import TypeGetText
 from arelle.webserver.bottle import (Bottle, HTTPResponse, request, response,
                                      static_file)
@@ -61,7 +62,9 @@ def getRuntimeOptions() -> RuntimeOptions:
     global _RUNTIME_OPTIONS
     if _RUNTIME_OPTIONS is None:
         raise ValueError(_('_RUNTIME_OPTIONS accessed before it was set.'))
-    return deepcopy(_RUNTIME_OPTIONS)
+    options = deepcopy(_RUNTIME_OPTIONS)
+    options.strictOptions = False
+    return options
 
 def setRuntimeOptions(runtimeOptions: RuntimeOptions) -> None:
     global _RUNTIME_OPTIONS
@@ -231,8 +234,9 @@ validationOptions = {
     "esef": ("disclosureSystemName", "esef"),
     "disclosure-system": ("disclosureSystemName", None),
     "ifrs": ("gfmName", "ifrs"),
-    "hmrc": ("gfmName", "hmrc"),
+    "hmrc": ("gfmName", "uk"),
     "sbr-nl": ("gfmName", "sbr-nl"),
+    "uk": ("gfmName", "uk"),
     "utr": ("utrValidate", True),
     "infoset": ("infosetValidate", True),
     # these parameters pass through the value after + in query
@@ -367,8 +371,6 @@ def runOptionsAndGetResult(
         if hasattr(options, "saveOIMinstance") or entryIsOIM:
             plugins = options.plugins.split("|") if options.plugins else []
             if entryIsOIM:
-                if "loadFromOIM" not in plugins:
-                    plugins.append("loadFromOIM")
                 addLogToZip = True
             if getattr(options, "saveOIMinstance", "").rpartition(".")[2] in ("json", "csv", "xlsx"):
                 if "saveLoadableOIM" not in plugins:

@@ -7,6 +7,7 @@ from arelle import ViewWinTree, ModelDtsObject, ModelInstanceObject, ModelRender
 from arelle.ModelRelationshipSet import ModelRelationshipSet
 from arelle.ModelDtsObject import ModelRelationship
 from arelle.ModelFormulaObject import ModelFilter
+from arelle.ModelObject import ModelObject
 from arelle.ViewUtil import viewReferences, groupRelationshipSet, groupRelationshipLabel
 from arelle.XbrlConst import conceptNameLabelRole, documentationLabel, widerNarrower
 
@@ -88,7 +89,7 @@ class ViewRelationshipSet(ViewWinTree.ViewTree):
                     self.treeView.heading("type", text=_("Type"))
                     self.treeView.column("references", width=200, anchor="w", stretch=False)
                     self.treeView.heading("references", text=_("References"))
-                elif self.arcrole == XbrlConst.summationItem: # extra columns
+                elif self.arcrole in XbrlConst.summationItems: # extra columns
                     self.treeView.column("#0", width=300, anchor="w")
                     self.treeView["columns"] = ("weight", "balance")
                     self.treeView.column("weight", width=48, anchor="w", stretch=False)
@@ -252,7 +253,7 @@ class ViewRelationshipSet(ViewWinTree.ViewTree):
                     self.treeView.set(childnode, "preferredLabel", preferredLabel)
                 self.treeView.set(childnode, "type", concept.niceType)
                 self.treeView.set(childnode, "references", viewReferences(concept))
-            elif self.arcrole == XbrlConst.summationItem:
+            elif self.arcrole in XbrlConst.summationItems:
                 if isRelation:
                     self.treeView.set(childnode, "weight", "{:+0g} ".format(modelObject.weight))
                 self.treeView.set(childnode, "balance", concept.balance)
@@ -279,11 +280,15 @@ class ViewRelationshipSet(ViewWinTree.ViewTree):
                 if concept.get("merge") == "true":
                     self.treeView.set(childnode, "merge", '\u2713') # checkmark unicode character
                 if isRelation:
-                    self.treeView.set(childnode, "axis", modelObject.axisDisposition)
-                    if isinstance(concept, (ModelEuAxisCoord,ModelRuleDefinitionNode)):
+                    self.treeView.set(childnode, "axis", modelObject.axis)
+                    if isinstance(concept, DefnMdlRuleDefinitionNode):
                         self.treeView.set(childnode, "priItem", concept.aspectValue(None, Aspect.CONCEPT))
-                        self.treeView.set(childnode, "dims", ' '.join(("{0},{1}".format(dim, concept.aspectValue(None, dim))
-                                                                       for dim in (concept.aspectValue(None, Aspect.DIMENSIONS, inherit=False) or []))))
+                        self.treeView.set(childnode, "dims", ' '.join(("{0},{1}".format(dim, dimAspectVal.stringValue if isinstance(dimAspectVal,ModelObject) else
+                                                                                        (dimAspectVal or concept.variableRefs()))
+                                                                       for dim in (concept.aspectValue(None, Aspect.DIMENSIONS, inherit=False) or [])
+                                                                       for dimAspectVal in (concept.aspectValue(None, dim),)
+                                                                       if dimAspectVal is not None))
+            )
             elif self.arcrole == widerNarrower:
                 if isRelation:
                     otherWider = [modelRel.fromModelObject
@@ -308,7 +313,7 @@ class ViewRelationshipSet(ViewWinTree.ViewTree):
                 for modelRel in childRelationshipSet.fromModelObject(concept):
                     nestedRelationshipSet = childRelationshipSet
                     targetRole = modelRel.targetRole
-                    if self.arcrole == XbrlConst.summationItem:
+                    if self.arcrole in XbrlConst.summationItems:
                         childPrefix = "({:0g}) ".format(modelRel.weight) # format without .0 on integer weights
                     elif targetRole is None or len(targetRole) == 0:
                         targetRole = relationshipSet.linkrole
@@ -407,5 +412,5 @@ class ViewRelationshipSet(ViewWinTree.ViewTree):
             return self.hasAncestor(self.treeView.parent(node), ancestor)
         return False
 
-from arelle.ModelRenderingObject import ModelEuAxisCoord, ModelRuleDefinitionNode
+from arelle.ModelRenderingObject import DefnMdlRuleDefinitionNode
 from arelle.ModelFormulaObject import Aspect

@@ -3,6 +3,8 @@ from __future__ import annotations
 from tests.integration_tests.validation.conformance_suite_config import ConformanceSuiteConfig
 from tests.integration_tests.validation.conformance_suite_configurations.dba_current import config as dba_current
 from tests.integration_tests.validation.conformance_suite_configurations.efm_current import config as efm_current
+from tests.integration_tests.validation.conformance_suite_configurations.efm_reg_dqc import config as efm_reg_dqc
+from tests.integration_tests.validation.conformance_suite_configurations.efm_reg_pragmatic import config as efm_reg_pragmatic
 from tests.integration_tests.validation.conformance_suite_configurations.esef_ixbrl_2021 import config as esef_ixbrl_2021
 from tests.integration_tests.validation.conformance_suite_configurations.esef_ixbrl_2022 import config as esef_ixbrl_2022
 from tests.integration_tests.validation.conformance_suite_configurations.esef_ixbrl_2023 import config as esef_ixbrl_2023
@@ -28,6 +30,7 @@ from tests.integration_tests.validation.conformance_suite_configurations.xbrl_fo
 from tests.integration_tests.validation.conformance_suite_configurations.xbrl_ixbrl_1_1 import config as xbrl_ixbrl_1_1
 from tests.integration_tests.validation.conformance_suite_configurations.xbrl_link_role_registry_1_0 import config as xbrl_link_role_registry_1_0
 from tests.integration_tests.validation.conformance_suite_configurations.xbrl_oim_1_0 import config as xbrl_oim_1_0
+from tests.integration_tests.validation.conformance_suite_configurations.xbrl_report_packages_1_0 import config as xbrl_report_packages_1_0
 from tests.integration_tests.validation.conformance_suite_configurations.xbrl_table_linkbase_1_0 import config as xbrl_table_linkbase_1_0
 from tests.integration_tests.validation.conformance_suite_configurations.xbrl_taxonomy_packages_1_0 import config as xbrl_taxonomy_packages_1_0
 from tests.integration_tests.validation.conformance_suite_configurations.xbrl_transformation_registry_3 import config as xbrl_transformation_registry_3
@@ -41,6 +44,8 @@ from tests.integration_tests.validation.conformance_suite_configurations.xbrl_ut
 ALL_CONFORMANCE_SUITE_CONFIGS: tuple[ConformanceSuiteConfig, ...] = (
     dba_current,
     efm_current,
+    efm_reg_dqc,
+    efm_reg_pragmatic,
     esef_ixbrl_2021,
     esef_ixbrl_2022,
     esef_ixbrl_2023,
@@ -66,6 +71,7 @@ ALL_CONFORMANCE_SUITE_CONFIGS: tuple[ConformanceSuiteConfig, ...] = (
     xbrl_ixbrl_1_1,
     xbrl_link_role_registry_1_0,
     xbrl_oim_1_0,
+    xbrl_report_packages_1_0,
     xbrl_table_linkbase_1_0,
     xbrl_taxonomy_packages_1_0,
     xbrl_transformation_registry_3,

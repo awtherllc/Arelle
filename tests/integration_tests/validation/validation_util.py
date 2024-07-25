@@ -62,7 +62,7 @@ def get_testcase_variation_map(config: ConformanceSuiteConfig) -> dict[str, list
 
     if zipfile.is_zipfile(entry_point_root):
         with zipfile.ZipFile(entry_point_root) as zip_file:
-            _collect_zip_test_cases(zip_file, entry_point_str, test_case_paths)
+            _collect_zip_test_cases(zip_file, entry_point_str, test_case_paths, config.expected_missing_testcases)
             return _collect_zip_test_case_variation_ids(zip_file, test_case_paths)
     else:
         _collect_dir_test_cases(entry_point_root, entry_point_str, test_case_paths)
@@ -162,9 +162,19 @@ def _verify_shards(
         assert sorted(vids) == sorted(discovered_paths_map[path])
 
 
-def _collect_zip_test_cases(zip_file: zipfile.ZipFile, file_path: str, path_strs: list[str]) -> None:
+def _collect_zip_test_cases(
+        zip_file: zipfile.ZipFile,
+        file_path: str,
+        path_strs: list[str],
+        expected_missing_testcases: frozenset[str],
+) -> None:
     zip_files = zip_file.namelist()
-    if file_path not in zip_files:
+    file_path_in_zip = file_path in zip_files
+    if file_path in expected_missing_testcases:
+        if file_path_in_zip:
+            raise RuntimeError(f"Found test case file {file_path} that was expected to be missing.")
+        return None
+    if file_path_in_zip:
         # case insensitive search (necessary for EFM suite).
         matching_files = [
             zf for zf in zip_files
@@ -177,7 +187,7 @@ def _collect_zip_test_cases(zip_file: zipfile.ZipFile, file_path: str, path_strs
     with zip_file.open(file_path) as fh:
         tree = etree.parse(fh)
     for test_case_index in _collect_test_case_paths(file_path, tree, path_strs):
-        _collect_zip_test_cases(zip_file, test_case_index, path_strs)
+        _collect_zip_test_cases(zip_file, test_case_index, path_strs, expected_missing_testcases)
 
 
 def _collect_zip_test_case_variation_ids(zip_file: zipfile.ZipFile, test_case_paths: list[str]) -> dict[str, list[str]]:
@@ -423,7 +433,7 @@ def save_diff_html_file(expected_results_path: Path, actual_results_path: Path, 
 
 
 def save_timing_file(config: ConformanceSuiteConfig, results: list[ParameterSet]) -> None:
-    timing: dict[str, float] = defaultdict(float)
+    durations: dict[str, float] = defaultdict(float)
     for result in results:
         testcase_id = result.id
         values = result.values[0]
@@ -432,15 +442,19 @@ def save_timing_file(config: ConformanceSuiteConfig, results: list[ParameterSet]
         assert status, f'Test result has no status: {testcase_id}'
         if status == 'skip':
             continue
-        assert testcase_id and testcase_id not in timing
+        assert testcase_id and testcase_id not in durations
         duration = values.get('duration')  # type: ignore[union-attr]
         if duration:
-            timing[testcase_id] = duration
-    if timing:
-        duration_avg = statistics.mean(timing.values())
-        timing = {
-            testcase_id: duration/duration_avg
-            for testcase_id, duration in sorted(timing.items())
+            durations[testcase_id] = duration
+    if durations:
+        duration_values = durations.values()
+        duration_mean = statistics.mean(duration_values)
+        duration_stdev = statistics.stdev(duration_values)
+        durations = {
+            testcase_id: duration/duration_mean
+            for testcase_id, duration in sorted(durations.items())
         }
+        durations['<mean>'] = duration_mean
+        durations['<stdev>'] = duration_stdev
     with open(f'conf-{config.name}-timing.json', 'w') as file:
-        json.dump(timing, file, indent=4)
+        json.dump(durations, file, indent=4)

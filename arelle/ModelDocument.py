@@ -3,12 +3,15 @@ See COPYRIGHT.md for copyright information.
 '''
 from __future__ import annotations
 import os, io
+import regex as re
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
 from lxml import etree
 from xml.sax import SAXParseException
 from arelle import (PackageManager, XbrlConst, XmlUtil, UrlUtil, ValidateFilingText,
                     XhtmlValidate, XmlValidateSchema, FunctionIxt)
+from arelle.conformance.CSVTestcaseLoader import CSVTestcaseException, loadCsvTestcase
 from arelle.FileSource import FileSource
 from arelle.ModelObject import ModelObject
 from arelle.ModelValue import qname
@@ -22,6 +25,8 @@ from arelle.XhtmlValidate import ixMsgCode
 from arelle.XmlValidateConst import VALID
 from arelle.XmlValidate import validate as xmlValidate, lxmlSchemaValidate
 from arelle.ModelTestcaseObject import ModelTestcaseVariation
+
+urlMatchPattern = re.compile("^https?://(?:www.)?(xbrl.org)/(.*)$") # for checking allowable schemaLocation mismatches
 
 creationSoftwareNames = None
 
@@ -48,6 +53,7 @@ def load(modelXbrl, uri, base=None, referringElement=None, isEntry=False, isDisc
     :type reloadCache: bool
     :param checkModifiedTime: True if desired to check modifed time of web cached entry point (ahead of usual time stamp checks).
     :type checkModifiedTime: bool
+    :param entrypoint (in kwargs) might contain securityClassification ("unclassified", "confidential", "secret", etc)
     """
 
     if referringElement is None: # used for error messages
@@ -72,10 +78,10 @@ def load(modelXbrl, uri, base=None, referringElement=None, isEntry=False, isDisc
             modelXbrl.uriDir = os.path.dirname(modelXbrl.uriDir)
     if modelXbrl.modelManager.validateDisclosureSystem and \
        not normalizedUri.startswith(modelXbrl.uriDir) and \
-       not modelXbrl.modelManager.disclosureSystem.hrefValid(normalizedUri):
+       not modelXbrl.modelManager.disclosureSystem.hrefValidForDisclosureSystem(normalizedUri):
         blocked = modelXbrl.modelManager.disclosureSystem.blockDisallowedReferences
         if normalizedUri not in modelXbrl.urlUnloadableDocs:
-            # HMRC note, HMRC.blockedFile should be in this list if hmrc-taxonomies.xml is maintained an dup to date
+            # HMRC note, HMRC.blockedFile should be in this list if uk-taxonomies.xml is maintained an dup to date
             modelXbrl.error(("EFM.6.22.00", "GFM.1.1.3", "SBR.NL.2.1.0.06" if normalizedUri.startswith("http") else "SBR.NL.2.2.0.17"),
                     _("Prohibited file for filings %(blockedIndicator)s: %(url)s"),
                     edgarCode="cp-2200-Prohibited-Href-Or-Schema-Location",
@@ -130,9 +136,9 @@ def load(modelXbrl, uri, base=None, referringElement=None, isEntry=False, isDisc
     isPullLoadable = any(pluginMethod(modelXbrl, mappedUri, normalizedUri, filepath, isEntry=isEntry, namespace=namespace, **kwargs)
                          for pluginMethod in pluginClassMethods("ModelDocument.IsPullLoadable"))
 
-    if not isPullLoadable and os.path.splitext(filepath)[1] in (".xlsx", ".xls", ".csv", ".json"):
+    if not isPullLoadable and os.path.splitext(filepath)[1] in (".xlsx", ".xls"):
         modelXbrl.error("FileNotLoadable",
-                _("File can not be loaded, requires loadFromExcel or loadFromOIM plug-in: %(fileName)s"),
+                _("File can not be loaded, requires loadFromExcel plug-in: %(fileName)s"),
                 modelObject=referringElement, fileName=normalizedUri)
         return None
 
@@ -144,6 +150,20 @@ def load(modelXbrl, uri, base=None, referringElement=None, isEntry=False, isDisc
         for pluginMethod in pluginClassMethods("ModelDocument.PullLoader"):
             # assumes not possible to check file in string format or not all available at once
             modelDocument = pluginMethod(modelXbrl, normalizedUri, filepath, isEntry=isEntry, namespace=namespace, **kwargs)
+            if isinstance(modelDocument, Exception):
+                return None
+            if modelDocument is not None:
+                return modelDocument
+        if Path(filepath).suffix == ".csv":
+            try:
+                modelDocument = loadCsvTestcase(modelXbrl, normalizedUri)
+                if modelDocument is not None:
+                    return modelDocument
+            except CSVTestcaseException:
+                modelDocument = None
+        from arelle.oim.Load import isOimLoadable, oimLoader
+        if isOimLoadable(normalizedUri, filepath):
+            modelDocument = oimLoader(modelXbrl, normalizedUri, filepath)
             if isinstance(modelDocument, Exception):
                 return None
             if modelDocument is not None:
@@ -246,9 +266,13 @@ def load(modelXbrl, uri, base=None, referringElement=None, isEntry=False, isDisc
                     if otherModelDoc.basename == os.path.basename(uri):
                         if os.path.normpath(otherModelDoc.uri) != os.path.normpath(uri): # tolerate \ vs / or ../ differences
                             modelXbrl.urlDocs[uri] = otherModelDoc
-                            modelXbrl.warning("info:duplicatedSchema",
-                                    _("Schema file with same targetNamespace %(targetNamespace)s loaded from %(fileName)s and %(otherFileName)s"),
-                                    modelObject=referringElement, targetNamespace=targetNamespace, fileName=uri, otherFileName=otherModelDoc.uri)
+                            # tolerate certain schemaLocation mismatches
+                            m1 = urlMatchPattern.match(otherModelDoc.uri)
+                            m2 = urlMatchPattern.match(uri)
+                            if not (m1 and m2 and m1.groups() == m2.groups()):
+                                modelXbrl.warning("info:duplicatedSchema",
+                                        _("Schema file with same targetNamespace %(targetNamespace)s loaded from %(fileName)s and %(otherFileName)s"),
+                                        modelObject=referringElement, targetNamespace=targetNamespace, fileName=uri, otherFileName=otherModelDoc.uri)
                         return otherModelDoc
         elif (isEntry or isDiscovered or isSupplemental) and ns == XbrlConst.link:
             if ln == "linkbase":
@@ -380,6 +404,9 @@ def load(modelXbrl, uri, base=None, referringElement=None, isEntry=False, isDisc
                     for referencedDoc in doc.referencesDocument.keys():
                         if referencedDoc.type == Type.SCHEMA:
                             modelDocument.targetDocumentSchemaRefs.add(doc.relativeUri(referencedDoc.uri))
+
+        if (kwargs.get("entrypoint") or {}).get("securityClassification"):
+            modelDocument.securityClassification = kwargs["entrypoint"]["securityClassification"]
 
         if isEntry or isSupplemental:
             # re-order base set keys for entry point or supplemental linkbase addition
@@ -881,11 +908,48 @@ class ModelDocument:
             return self._creationSoftwareComment
 
     @property
-    def creationSoftware(self):
+    def creationSoftware(self) -> str:
+        """
+        Extract software product name from root level comment elements.
+        If no comment text is found, returns string "None".
+        If no software product name is found, returns the comment text.
+        If any software product names are found, returns the first.
+        :return: Extracted text.
+        """
+        text = self.creationSoftwareComment
+        if not text:
+            return "None"
+        matches = self.creationSoftwareMatches(text)
+        if len(matches) > 0:
+            return matches[0]
+        return text
+
+    def creationSoftwareMatches(self, text: str | None) -> list[str]:
+        """
+        Given text, extract software product names.
+        If explicit pattern ("Software Credit: ...") is matched, only
+        returns those matches.
+        Otherwise, will check against a table of known software names and patterns.
+        Interested parties can add to the table by opening a pull request,
+        or by sending a request via email to support@arelle.org.
+        :param text:
+        :return: List of matched software names in order found.
+        """
+        matches = []
+        if text is None:
+            return matches
+        import regex as re
+        creditPattern = re.compile(r'Software Credit: (.*)', re.IGNORECASE)
+        for line in text.split('\n'):
+            if creditPattern.search(line):
+                creditMatch = creditPattern.sub(r'\1', line).strip()
+                matches.append(creditMatch)
+        if matches:
+            return matches
+
         global creationSoftwareNames
         if creationSoftwareNames is None:
             import json
-            import regex as re
             creationSoftwareNames = []
             try:
                 with io.open(os.path.join(self.modelXbrl.modelManager.cntlr.configDir, "creationSoftwareNames.json"),
@@ -897,13 +961,11 @@ class ModelDocument:
                 self.modelXbrl.error("arelle:creationSoftwareNamesTable",
                                      _("Error loading creation software names table %(error)s"),
                                      modelObject=self, error=ex)
-        creationSoftwareComment = self.creationSoftwareComment
-        if not creationSoftwareComment:
-            return "None"
         for productKey, productNamePattern in creationSoftwareNames:
-            if productNamePattern.search(creationSoftwareComment):
-                return productKey
-        return creationSoftwareComment # "Other"
+            if productNamePattern.search(text):
+                matches.append(productKey)
+                return matches  # Each document only matches on software name
+        return matches
 
     @property
     def processingInstructions(self):
@@ -1190,6 +1252,8 @@ class ModelDocument:
                                             linkrole = XbrlConst.defaultLinkRole
                                         #index by both arcrole and linkrole#arcrole and dimensionsions if applicable
                                         baseSetKeys = [(arcrole, linkrole, linkQn, arcQn)]
+                                        baseSetKeys.append((arcrole, linkrole, linkQn, None))
+                                        baseSetKeys.append((arcrole, linkrole, None, arcQn))
                                         baseSetKeys.append((arcrole, linkrole, None, None))
                                         baseSetKeys.append((arcrole, None, None, None))
                                         if XbrlConst.isDimensionArcrole(arcrole) and not dimensionArcFound:
@@ -1412,7 +1476,7 @@ class ModelDocument:
                             doc = load(self.modelXbrl, uriAttr, base=base, referringElement=testcaseElement)
                             self.addDocumentReference(doc, "testcaseIndex", testcaseElement)
 
-    def testcaseDiscover(self, testcaseElement, validateTestcaseSchema):
+    def testcaseDiscover(self, testcaseElement: etree._Element, validateTestcaseSchema: bool) -> None:
         if validateTestcaseSchema:
             lxmlSchemaValidate(self)
         isTransformTestcase = testcaseElement.namespaceURI == "http://xbrl.org/2011/conformance-rendering/transforms"
@@ -1469,9 +1533,9 @@ class ModelDocument:
 # inline document set level compilation
 # modelIxdsDocument is an inlineDocumentSet or entry inline document (if not a document set)
 #   note that multi-target and multi-instance facts may have html elements belonging to primary ixds instead of this instance ixds
-def inlineIxdsDiscover(modelXbrl, modelIxdsDocument, setTargetModelXbrl=False):
+def inlineIxdsDiscover(modelXbrl, modelIxdsDocument, setTargetModelXbrl=False, **kwargs):
     for pluginMethod in pluginClassMethods("ModelDocument.SelectIxdsTarget"):
-        pluginMethod(modelXbrl, modelIxdsDocument)
+        pluginMethod(modelXbrl, modelIxdsDocument, **kwargs)
     # extract for a single target document
     ixdsTarget = getattr(modelXbrl, "ixdsTarget", None)
     # compile inline result set

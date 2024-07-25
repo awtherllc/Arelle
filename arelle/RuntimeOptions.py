@@ -4,14 +4,11 @@ See COPYRIGHT.md for copyright information.
 from __future__ import annotations
 
 from dataclasses import InitVar, dataclass
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, Pattern
 
 from arelle.FileSource import FileNamedStringIO
 from arelle.SystemInfo import hasWebServer
-from arelle.typing import TypeGetText
 from arelle.ValidateDuplicateFacts import DeduplicationType
-
-_: TypeGetText
 
 RuntimeOptionValue = Union[bool, int, str, None]
 
@@ -28,13 +25,16 @@ class RuntimeOptions:
         using the pluginOptions InitVar and applied to the class using setattr() in __post_init
         RuntimeOptionsException is raised if an improper combination of options are specified.
     """
+    _initialized: bool = False
     pluginOptions: InitVar[Optional[dict[str, RuntimeOptionValue]]] = None
+    strictOptions: bool = True  # Accessing options that are not defined will raise an AttributeError
 
     abortOnMajorError: Optional[bool] = None
     about: Optional[str] = None
     anchFile: Optional[str] = None
     arcroleTypesFile: Optional[str] = None
     betaObjectModel: Optional[bool] = False
+    cacheDirectory: Optional[str] = None
     calFile: Optional[str] = None
     calcDecimals: Optional[int] = None
     calcDeduplicate: Optional[bool] = None
@@ -98,8 +98,10 @@ class RuntimeOptions:
     logFormat: Optional[str] = None
     logLevel: Optional[str] = None
     logLevelFilter: Optional[str] = None
-    logRefObjectProperties: Optional[str] = None
+    logPropagate: Optional[bool] = None
+    logRefObjectProperties: Optional[bool] = None
     logTextMaxLength: Optional[int] = None
+    logXmlMaxAttributeLength: Optional[int] = None
     monitorParentProcess: Optional[bool] = None
     noCertificateCheck: Optional[bool] = None
     outputAttribution: Optional[str] = None
@@ -111,11 +113,13 @@ class RuntimeOptions:
     plugins: Optional[str] = None
     preFile: Optional[str] = None
     proxy: Optional[str] = None
+    redirectFallbacks: Optional[dict[Pattern[str], str]] = None
     relationshipCols: Optional[int] = None
     roleTypesFile: Optional[str] = None
     rssReport: Optional[str] = None
     rssReportCols: Optional[int] = None
     saveDeduplicatedInstance: Optional[bool] = None
+    saveOIMToXMLReport: Optional[str] = None
     showEnvironment: Optional[bool] = None
     showOptions: Optional[bool] = None
     skipDTS: Optional[bool] = None
@@ -134,6 +138,7 @@ class RuntimeOptions:
     utrValidate: Optional[bool] = None
     validate: Optional[bool] = None
     validateDuplicateFacts: Optional[str] = None
+    validateXmlOim: Optional[bool] = None
     validateEFM: Optional[bool] = None
     validateEFMCalcTree: Optional[bool] = None
     validateHMRC: Optional[bool] = None
@@ -144,11 +149,34 @@ class RuntimeOptions:
     webserver: Optional[str] = None
     xdgConfigHome: Optional[str] = None
 
+    def __delattr__(self, name: str) -> Any:
+        """
+        Delete attribute while silencing AttributeError if it does not exist and `strictOptions` is False.
+        :param name:
+        :return: None
+        """
+        try:
+            object.__delattr__(self, name)
+        except AttributeError as exc:
+            if self.strictOptions:
+                raise exc
+
     def __eq__(self, other: Any) -> bool:
         """ Default dataclass implementation doesn't consider plugin applied options. """
         if isinstance(other, RuntimeOptions):
             return vars(self) == vars(other)
         return NotImplemented
+
+    def __getattr__(self, name: str) -> Any:
+        """
+        If an attribute isn't found, it may be an unspecified plugin option.
+        Return None for any attributes not found on the class.
+        :param name:
+        :return: None
+        """
+        if self._initialized and not self.strictOptions:
+            return None
+        raise AttributeError(name)
 
     def __repr__(self) -> str:
         """ Default dataclass implementation doesn't consider plugin applied options. """
@@ -171,7 +199,7 @@ class RuntimeOptions:
                 if hasattr(self, optionName)
             )
             if existingBaseOptions:
-                raise RuntimeOptionsException(_('Provided plugin options already exist as base options {}').format(existingBaseOptions))
+                raise RuntimeOptionsException('Provided plugin options already exist as base options {}'.format(existingBaseOptions))
             for optionName, optionValue in pluginOptions.items():
                 setattr(self, optionName, optionValue)
         if (self.entrypointFile is None and
@@ -179,9 +207,9 @@ class RuntimeOptions:
                 not self.plugins and
                 not pluginOptions and
                 not self.webserver):
-            raise RuntimeOptionsException(_('Incorrect arguments'))
+            raise RuntimeOptionsException('Incorrect arguments')
         if self.webserver and not hasWebServer():
-            raise RuntimeOptionsException(_("Webserver option requires webserver module"))
+            raise RuntimeOptionsException("Webserver option requires webserver module")
         if self.webserver and any((
                 self.entrypointFile, self.importFiles, self.diffFile, self.versReportFile,
                 self.factsFile, self.factListCols, self.factTableFile, self.factTableCols,
@@ -189,4 +217,5 @@ class RuntimeOptions:
                 self.dimFile, self.anchFile, self.formulaeFile, self.viewArcrole, self.viewFile,
                 self.roleTypesFile, self.arcroleTypesFile
         )):
-            raise RuntimeOptionsException(_('Incorrect arguments with webserver'))
+            raise RuntimeOptionsException('Incorrect arguments with webserver')
+        self._initialized = True

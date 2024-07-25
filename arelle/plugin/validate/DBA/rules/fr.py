@@ -7,13 +7,14 @@ import datetime
 import itertools
 from typing import Any, Iterable, cast
 
+import arelle.ModelInstanceObject
 from arelle.typing import TypeGetText
 from arelle.ValidateXbrl import ValidateXbrl
 
 from arelle.utils.PluginHooks import ValidationHook
 from arelle.utils.validate.Decorator import validation
 from arelle.utils.validate.Validation import Validation
-from . import errorOnDateFactComparison
+from . import errorOnDateFactComparison, errorOnRequiredFact, getFactsWithDimension, getFactsGroupedByContextId, errorOnRequiredPositiveFact
 from ..PluginValidationDataExtension import PluginValidationDataExtension
 
 
@@ -23,12 +24,33 @@ _: TypeGetText
 @validation(
     hook=ValidationHook.XBRL_FINALLY,
 )
+def rule_fr3(
+        pluginData: PluginValidationDataExtension,
+        val: ValidateXbrl,
+        *args: Any,
+        **kwargs: Any,
+) -> Iterable[Validation]:
+    """
+    DBA.FR3: The company's accounting class is missing.
+    This must be marked separately in the field (fsa:ClassOfReportingEntity).
+    """
+    return errorOnRequiredFact(
+        val.modelXbrl,
+        factQn=pluginData.classOfReportingEntityQn,
+        code='DBA.FR3',
+        message=_("Error code FR3: The company's accounting class is missing. "
+                  "This must be marked separately in the field (fsa:ClassOfReportingEntity).")
+    )
+
+@validation(
+    hook=ValidationHook.XBRL_FINALLY,
+)
 def rule_fr4(
     pluginData: PluginValidationDataExtension,
     val: ValidateXbrl,
     *args: Any,
     **kwargs: Any,
-) -> Iterable[Validation] | None:
+) -> Iterable[Validation]:
     """
     DBA.FR4: The end date of the accounting period (gsd:ReportingPeriodEndDate with
     default TypeOfReportingPeriodDimension) must not be before the start date of the
@@ -54,7 +76,7 @@ def rule_fr5(
         val: ValidateXbrl,
         *args: Any,
         **kwargs: Any,
-) -> Iterable[Validation] | None:
+) -> Iterable[Validation]:
     """
     DBA.FR5: General meeting date (gsd:DateOfGeneralMeeting) must not be before the
     end date of the accounting period (gsd:ReportingPeriodEndDate with default
@@ -80,7 +102,7 @@ def rule_fr7(
         val: ValidateXbrl,
         *args: Any,
         **kwargs: Any,
-) -> Iterable[Validation] | None:
+) -> Iterable[Validation]:
     """
     DBA.FR7: Date of approval of the annual report (gsd:DateOfApprovalOfAnnualReport)
     must be after the end date of the Accounting Period (gsd:ReportingPeriodEndDate
@@ -106,7 +128,7 @@ def rule_fr9(
         val: ValidateXbrl,
         *args: Any,
         **kwargs: Any,
-) -> Iterable[Validation] | None:
+) -> Iterable[Validation]:
     """
     DBA.FR9: The year's result (fsa:ProfitLoss) must be filled in as part of the income statement.
     The control only looks at instances without dimensions or instances that only have the dimension
@@ -115,18 +137,10 @@ def rule_fr9(
     Implementation: Find any occurrence of fsa:ProfitLoss with no dimensions or with dimensions of
     ConsolidatedSoloDimension with ConsolidatedMember.  If nothing is found, trigger an error.
     """
-    profLossFacts = val.modelXbrl.factsByQname.get(pluginData.profitLossQn)
-    found = False
-    if profLossFacts:
-        for fact in profLossFacts:
-            if fact.context is None:
-                continue
-            elif (fact.context.dimMemberQname(pluginData.consolidatedSoloDimensionQn) == pluginData.consolidatedMemberQn
-                  and fact.context.qnameDims.keys() == {pluginData.consolidatedSoloDimensionQn}):
-                found = True
-            elif not len(fact.context.qnameDims):
-                found = True
-    if not found:
+    if not getFactsWithDimension(
+            val, pluginData.profitLossQn, pluginData.consolidatedSoloDimensionQn,
+            pluginData.consolidatedSoloDimensionQn
+    ):
         yield Validation.error(
             codes="DBA.FR9",
             msg=_("Error code FR9: The year's result in the income statement must be filled in."),
@@ -137,12 +151,95 @@ def rule_fr9(
 @validation(
     hook=ValidationHook.XBRL_FINALLY,
 )
+def rule_fr10(
+        pluginData: PluginValidationDataExtension,
+        val: ValidateXbrl,
+        *args: Any,
+        **kwargs: Any,
+) -> Iterable[Validation]:
+    """
+    DBA.FR10: Equity (fsa:Equity) must be filled in. The control only looks at instances without
+    dimensions or instances that only have the dimension (ConsolidatedSoloDimension with ConsolidatedMember).
+    Instances of "Equity" with other dimensions do not lift the reporting obligation.
+
+    Implementation: Find any occurrence of fsa:Equity with no dimensions or with dimensions of
+    ConsolidatedSoloDimension with ConsolidatedMember.  If nothing is found, trigger an error.
+
+    """
+    if not getFactsWithDimension(
+            val, pluginData.equityQn,
+            pluginData.consolidatedSoloDimensionQn, pluginData.consolidatedMemberQn
+    ):
+        yield Validation.error(
+            codes="DBA.FR10",
+            msg=_("Error code FR10: Equity in the balance sheet must be filled in."),
+            modelObject=val.modelXbrl.modelDocument
+        )
+
+
+@validation(
+    hook=ValidationHook.XBRL_FINALLY,
+)
+def rule_fr22(
+        pluginData: PluginValidationDataExtension,
+        val: ValidateXbrl,
+        *args: Any,
+        **kwargs: Any,
+) -> Iterable[Validation]:
+    """
+    DBA.FR22: Assets (fsa:Assets) must be specified and must not be negative.
+    The control only looks at instances without dimensions or instances that only have the dimension
+    (ConsolidatedSoloDimension with ConsolidatedMember).
+
+    Implementation: Find any occurrence of fsa:Assets with no dimensions or with dimensions of
+    ConsolidatedSoloDimension with ConsolidatedMember.  If nothing is found or if a found fact is negative,  trigger an error.
+    """
+    foundFacts = getFactsWithDimension(
+        val, pluginData.assetsQn, pluginData.consolidatedSoloDimensionQn,
+        pluginData.consolidatedSoloDimensionQn
+    )
+    return errorOnRequiredPositiveFact(
+        val.modelXbrl, foundFacts,
+        'DBA.FR22', _("Error code FR22: Assets must be stated and must not be negative.")
+    )
+
+
+
+@validation(
+    hook=ValidationHook.XBRL_FINALLY,
+)
+def rule_fr23(
+        pluginData: PluginValidationDataExtension,
+        val: ValidateXbrl,
+        *args: Any,
+        **kwargs: Any,
+) -> Iterable[Validation]:
+    """
+    DBA.FR23: Liabilities (fsa:LiabilitiesAndEquity) must be specified and must not be negative.
+    The control only looks at instances without dimensions or instances that only have the dimension
+    (ConsolidatedSoloDimension with ConsolidatedMember).
+
+    Implementation: Find any occurrence of LiabilitiesAndEquity with no dimensions or with dimensions of
+    ConsolidatedSoloDimension with ConsolidatedMember.  If nothing is found or if a found fact is negative,  trigger an error.
+    """
+    foundFacts = getFactsWithDimension(
+        val, pluginData.liabilitiesQn, pluginData.consolidatedSoloDimensionQn,
+        pluginData.consolidatedSoloDimensionQn
+    )
+    return errorOnRequiredPositiveFact(
+        val.modelXbrl, foundFacts,
+        'DBA.FR23', _("Error code FR23: Liabilities must be stated and must not be negative.")
+    )
+
+@validation(
+    hook=ValidationHook.XBRL_FINALLY,
+)
 def rule_fr39(
         pluginData: PluginValidationDataExtension,
         val: ValidateXbrl,
         *args: Any,
         **kwargs: Any,
-) -> Iterable[Validation] | None:
+) -> Iterable[Validation]:
     """
     DBA.FR39: Date of extraordinary dividend (fsb:DateOfExtraordinaryDividendDistributedAfterEndOfReportingPeriod)
     must be after the end of the financial year (gsd:ReportingPeriodEndDate) (with default
@@ -163,12 +260,67 @@ def rule_fr39(
 @validation(
     hook=ValidationHook.XBRL_FINALLY,
 )
+def rule_fr41(
+        pluginData: PluginValidationDataExtension,
+        val: ValidateXbrl,
+        *args: Any,
+        **kwargs: Any,
+) -> Iterable[Validation]:
+    """
+    DBA.FR41: Failure to fill in 'Tax on profit for the year' or 'Tax on ordinary profit'
+
+    If the result for the year is positive(fsa:ProfitLoss) (defined as greater than DKK 1000),
+    either Tax on the year's result (fsa:TaxExpense) or Tax on ordinary result
+    (fsa:TaxExpenseOnOrdinaryActivities) must be filled in.
+
+    The control does not look at I/S (partnership), K/S (limited partnership) and P/S
+    (partner company, like an LLC). (based on what legal form the identification number is
+    registered as in the business register).
+
+    Implementation: For each reporting period context that has a fsa:ProfitLoss fact above
+    the threshold, check if there is either a non-nil fsa:TaxExpense or fsa:TaxExpenseOnOrdinaryActivities
+    fact in the same context. If not, trigger an error.
+    """
+
+    # TODO: There appears to be criteria that exempt some filings from this rule.
+    # The criteria is based on the legal form of the company, which may or may not be
+    # something we can determine from the identification number and/or other instance data.
+    # Once we determine if/how that criteria can be implemented, we can add it here.
+
+    modelXbrl = val.modelXbrl
+    contextIds = {c.id for c in pluginData.getCurrentAndPreviousReportingPeriodContexts(modelXbrl)}
+    contextMap = {k: v for k, v in pluginData.contextFactMap(modelXbrl).items() if k in contextIds}
+    for contextId, factMap in contextMap.items():
+        profitLossFact = factMap.get(pluginData.profitLossQn)
+        if profitLossFact is None:
+            continue
+        if cast(float, profitLossFact.xValue) <= pluginData.positiveProfitThreshold:
+            continue
+        taxExpenseFact = factMap.get(pluginData.taxExpenseQn)
+        if taxExpenseFact is not None and not taxExpenseFact.isNil:
+            continue
+        taxExpenseOnOrdinaryActivitiesFact = factMap.get(pluginData.taxExpenseOnOrdinaryActivitiesQn)
+        if taxExpenseOnOrdinaryActivitiesFact is not None and not taxExpenseOnOrdinaryActivitiesFact.isNil:
+            continue
+        yield Validation.warning(
+            codes='DBA.FR41',
+            msg=_("ADVICE FR41: The annual report does not contain information on tax "
+                  "on the year's profit. If the profit for the year in the income "
+                  "statement is positive, either 'Tax on profit for the year' or "
+                  "'Tax on ordinary profit' must be filled in."),
+            modelObject=profitLossFact,
+        )
+
+
+@validation(
+    hook=ValidationHook.XBRL_FINALLY,
+)
 def rule_fr48(
         pluginData: PluginValidationDataExtension,
         val: ValidateXbrl,
         *args: Any,
         **kwargs: Any,
-) -> Iterable[Validation] | None:
+) -> Iterable[Validation]:
     """
     DBA.FR48: Annual reports with a start date of 1/1 2016 or later may not use the fields:
     'Extraordinary result before tax',
@@ -199,7 +351,7 @@ def rule_fr55(
         val: ValidateXbrl,
         *args: Any,
         **kwargs: Any,
-) -> Iterable[Validation] | None:
+) -> Iterable[Validation]:
     """
     DBA.FR55: If a period with an end date immediately before the currently selected start
     date (gsd:ReportingPeriodStartDate) has previously been reported, the previous accounting
@@ -251,3 +403,79 @@ def rule_fr55(
                 previousStartDate=previousStartDate,
                 previousEndDate=previousEndDate,
             )
+
+
+@validation(
+    hook=ValidationHook.XBRL_FINALLY,
+)
+def rule_fr56(
+        pluginData: PluginValidationDataExtension,
+        val: ValidateXbrl,
+        *args: Any,
+        **kwargs: Any,
+) -> Iterable[Validation]:
+    """
+    DBA.FR56: Missing allocation of profit. The annual report must contain a
+    distribution of results.
+
+    Annual reports, etc. with a start date of 1/1 2016 or later must have a profit
+    allocation, if the profit (fsa:ProfitLoss) for the year is greater than 1000 or
+    less than -1000, cf. the Annual Accounts Act §§ 31 and 95 a.
+    """
+    modelXbrl = val.modelXbrl
+    contextIds = {c.id for c in pluginData.getCurrentAndPreviousReportingPeriodContexts(modelXbrl)}
+    profitLossFactsMap = getFactsGroupedByContextId(modelXbrl, pluginData.profitLossQn)
+    distributionFactsMap = getFactsGroupedByContextId(
+        modelXbrl,
+        *pluginData.distributionOfResultsQns,
+    )
+    for contextId, profitLossFacts in profitLossFactsMap.items():
+        if contextId not in contextIds:
+            continue
+        profitLossFact = None
+        for fact in profitLossFacts:
+            profitLossValue = cast(float, fact.xValue)
+            if not (-pluginData.positiveProfitThreshold <= profitLossValue <= pluginData.positiveProfitThreshold):
+                profitLossFact = fact
+                break
+        if profitLossFact is None:
+            continue
+        distributionFacts = distributionFactsMap.get(contextId, [])
+        valid = False
+        for distributionsResultDistributionFact in distributionFacts:
+            if not distributionsResultDistributionFact.isNil:
+                valid = True
+                break
+        if not valid:
+            yield Validation.warning(
+                codes='DBA.FR56',
+                msg=_("ADVICE FR56: The annual report does not contain a profit distribution. "
+                      "The annual report must contain a profit and loss statement with a "
+                      "distribution of profits."),
+                modelObject=profitLossFact
+            )
+
+
+@validation(
+    hook=ValidationHook.XBRL_FINALLY,
+)
+def rule_fr81(
+        pluginData: PluginValidationDataExtension,
+        val: ValidateXbrl,
+        *args: Any,
+        **kwargs: Any,
+) -> Iterable[Validation]:
+    """
+    DBA.FR81: The language used must be stated. There must be at least one fact with either the Danish
+    (`da`) or English (`en`) `lang` attribute in the digital file (the XBRL file or the IXBRL file).
+
+    Implementation: Check all facts for at least one `lang` attribute that must be either `da` or `en`.
+    """
+    has_valid_lang = any(fact.xmlLang in {'da', 'en'} for fact in val.modelXbrl.facts)
+    if not has_valid_lang:
+        yield Validation.error(
+            codes="DBA.FR81",
+            msg=_("The digital annual report does not contain a technical indication of the language used. There "
+                  "must be at least one fact, with either the Danish ('da') or English ('en') language attribute."),
+            modelObject=[val.modelXbrl.modelDocument]
+        )

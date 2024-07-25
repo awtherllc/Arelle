@@ -3,7 +3,7 @@ from tests.integration_tests.validation.conformance_suite_config import Conforma
 
 config = ConformanceSuiteConfig(
     args=[
-        '--hmrc',
+        '--disclosureSystem', 'hmrc',
     ],
     assets=[
         ConformanceSuiteAssetConfig.local_conformance_suite(
@@ -30,7 +30,7 @@ config = ConformanceSuiteConfig(
     info_url='https://www.gov.uk/government/organisations/hm-revenue-customs',
     name=PurePath(__file__).stem,
     network_or_cache_required=False,
-    plugins=frozenset({'validate/HMRC'}),
+    plugins=frozenset({'validate/UK'}),
     shards=4,
     test_case_result_options='match-any',
 )

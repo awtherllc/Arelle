@@ -1,21 +1,14 @@
 from pathlib import PurePath, Path
 
 from tests.integration_tests.validation.assets import NL_PACKAGES
-from tests.integration_tests.validation.conformance_suite_config import ConformanceSuiteConfig, ConformanceSuiteAssetConfig
+from tests.integration_tests.validation.conformance_suite_config import ConformanceSuiteConfig, ConformanceSuiteAssetConfig, AssetSource
 
 ZIP_PATH = Path('NT17_KVK_20221214 Berichten.zip')
 # needs to be extracted because arelle can't load a taxonomy package ZIP from within a ZIP
 EXTRACTED_PATH = Path(ZIP_PATH.stem)
 config = ConformanceSuiteConfig(
     args=[
-        '--disclosureSystem', 'NT17-preview',
-        '--logCodeFilter', '(?!({})$)'.format('|'.join([
-            'xbrlte:closedDefinitionNodeZeroCardinality',
-            'xbrlte:constraintSetAspectMismatch',
-            'xbrlte:invalidDimensionRelationshipSource',
-            'xbrlte:missingAspectValue',
-            'xbrlte:multipleValuesForAspect',
-        ])),
+        '--disclosureSystem', 'NT17',
     ],
     assets=[
         ConformanceSuiteAssetConfig.nested_conformance_suite(
@@ -24,6 +17,7 @@ config = ConformanceSuiteConfig(
             entry_point_root=EXTRACTED_PATH / 'berichten' / 'NT17_KVK_20221214 - Testsuite.zip',
             entry_point=Path('testcases.xml'),
             public_download_url='https://sbr-nl.nl/sites/default/files/bestanden/taxonomie/NT17_KVK_20221214%20Berichten.zip',
+            source=AssetSource.S3_PUBLIC,
         ),
         *NL_PACKAGES['NT17'],
     ],

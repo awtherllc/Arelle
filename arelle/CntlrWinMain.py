@@ -9,6 +9,8 @@ from arelle import ValidateDuplicateFacts
 import os, sys, subprocess, pickle, time, locale, fnmatch, platform, webbrowser
 import regex as re
 
+from arelle.logging.formatters.LogFormatter import logRefsFileLines
+
 if sys.platform == 'win32' and getattr(sys, 'frozen', False):
     # need the .dll directory in path to be able to access Tk and Tcl DLLs efore importinng Tk, etc.
     os.environ['PATH'] = os.path.dirname(sys.executable) + ";" + os.environ['PATH']
@@ -34,6 +36,7 @@ from arelle.PluginManager import pluginClassMethods
 from arelle.UrlUtil import isHttpUrl
 from arelle.ValidateXbrlCalcs import ValidateCalcsMode as CalcsMode
 from arelle.Version import copyrightLabel
+from arelle.oim.xml.Save import saveOimReportToXmlInstance
 import logging
 
 import threading, queue
@@ -44,7 +47,6 @@ from arelle import (DialogURL, DialogLanguage,
                     ModelDocument,
                     ModelManager,
                     PackageManager,
-                    RenderingEvaluator,
                     TableStructure,
                     ViewWinDTS,
                     ViewWinProperties, ViewWinConcepts, ViewWinRelationshipSet, ViewWinFormulae,
@@ -55,12 +57,12 @@ from arelle import (DialogURL, DialogLanguage,
                     ViewFileFactTable,
                     ViewFileFormulae,
                     ViewFileTests,
-                    ViewFileRenderedGrid,
                     ViewFileRelationshipSet,
                     Updater
                    )
 from arelle.ModelFormulaObject import FormulaOptions
 from arelle.FileSource import openFileSource
+from arelle.rendering import RenderingEvaluator
 
 restartMain = True
 
@@ -124,6 +126,7 @@ class CntlrWinMain (Cntlr.Cntlr):
                 (_("Save"), self.fileSaveExistingFile, "Ctrl+S", "<Control-s>"),
                 (_("Save As..."), self.fileSave, None, None),
                 (_("Save DTS Package"), self.saveDTSpackage, None, None),
+                (_("Save OIM Report to XBRL Instance"), self.saveXmlInstance, None, None),
                 ("PLUG-IN", "CntlrWinMain.Menu.File.Save", None, None),
                 (_("Close"), self.fileClose, "Ctrl+W", "<Control-w>"),
                 (None, None, None, None),
@@ -166,6 +169,11 @@ class CntlrWinMain (Cntlr.Cntlr):
         self.validateUtr = BooleanVar(value=self.modelManager.validateUtr)
         self.validateUtr.trace("w", self.setValidateUtr)
         validateMenu.add_checkbutton(label=_("Unit Type Registry validation"), underline=0, variable=self.validateUtr, onvalue=True, offvalue=False)
+
+        self.modelManager.validateXmlOim = self.config.setdefault("validateXmlOim", False)
+        self.validateXmlOim = BooleanVar(value=self.modelManager.validateXmlOim)
+        self.validateXmlOim.trace("w", self.setValidateXmlOim)
+        validateMenu.add_checkbutton(label=_("OIM validate xBRL-XML documents"), underline=0, variable=self.validateXmlOim, onvalue=True, offvalue=False)
 
         self.validateDuplicateFacts = None
         self.buildValidateDuplicateFactsMenu(validateMenu)
@@ -568,7 +576,7 @@ class CntlrWinMain (Cntlr.Cntlr):
         else:
             return reply
 
-    def fileSave(self, event=None, view=None, fileType=None, filenameFromInstance=False, *ignore):
+    def fileSave(self, event=None, view=None, fileType=None, filenameFromInstance=False, method=None, caption=None, *ignore):
         if view is None:
             view = getattr(self, "currentView", None)
         if view is not None:
@@ -588,23 +596,17 @@ class CntlrWinMain (Cntlr.Cntlr):
                     pass
             if isinstance(view, ViewWinRenderedGrid.ViewRenderedGrid):
                 initialdir = os.path.dirname(modelXbrl.modelDocument.uri)
-                if fileType in ("html", "xml", None):
-                    if fileType == "html" and filename is None:
+                if caption is not None and method is not None:
+                    if fileType in ("html", "xml", "json") and filename is None:
                         filename = self.uiFileDialog("save",
-                                title=_("arelle - Save HTML-rendered Table"),
+                                title=caption,
                                 initialdir=initialdir,
-                                filetypes=[(_("HTML file .html"), "*.html"), (_("HTML file .htm"), "*.htm")],
-                                defaultextension=".html")
-                    elif fileType == "xml" and filename is None:
-                        filename = self.uiFileDialog("save",
-                                title=_("arelle - Save Table Layout Model"),
-                                initialdir=initialdir,
-                                filetypes=[(_("Layout model file .xml"), "*.xml")],
-                                defaultextension=".xml")
+                                filetypes=[(_("HTML file .html"), "*.html"), (_("HTML file .htm"), "*.htm"), (_("XML file .xml"), "*.xml"), (_("JSON file .xml"), "*.json")],
+                                defaultextension=f".{fileType}")
                     else: # ask file type
                         if filename is None:
                             filename = self.uiFileDialog("save",
-                                    title=_("arelle - Save XBRL Instance or HTML-rendered Table"),
+                                    title=_caption,
                                     initialdir=initialdir,
                                     filetypes=[(_("XBRL instance .xbrl"), "*.xbrl"), (_("XBRL instance .xml"), "*.xml"), (_("HTML table .html"), "*.html"), (_("HTML table .htm"), "*.htm")],
                                     defaultextension=".html")
@@ -614,7 +616,7 @@ class CntlrWinMain (Cntlr.Cntlr):
                     if not filename:
                         return False
                     try:
-                        ViewFileRenderedGrid.viewRenderedGrid(modelXbrl, filename, lang=self.labelLang, sourceView=view)
+                        method(modelXbrl, filename, lang=self.labelLang, sourceView=view)
                     except (IOError, EnvironmentError) as err:
                         tkinter.messagebox.showwarning(_("arelle - Error"),
                                         _("Failed to save {0}:\n{1}").format(
@@ -995,6 +997,28 @@ class CntlrWinMain (Cntlr.Cntlr):
         if not isSupplementalModelXbrl:
             self.showStatus(_("Ready..."), 2000)
 
+    def saveXmlInstance(self):
+        modelXbrl = self.modelManager.modelXbrl
+        if not modelXbrl or not modelXbrl.modelDocument:
+            self.showStatus(_("No report loaded to save"), 5000)
+            return
+        if not modelXbrl.loadedFromOIM:
+            self.showStatus(_("Model not loaded from OIM report"), 5000)
+            return
+        configOutputInstanceDir = self.config.get("outputInstanceDir")
+        instanceFile = self.uiFileDialog("save",
+                title=_("arelle - Save XBRL instance document"),
+                initialdir=configOutputInstanceDir or ".",
+                filetypes=[(_("XBRL file .xbrl"), "*.xbrl"), (_("XBRL file .xml"), "*.xml")],
+                defaultextension=".xbrl")
+        if isinstance(instanceFile, str):
+            outputInstanceDir = os.path.dirname(instanceFile)
+            if outputInstanceDir != configOutputInstanceDir:
+                self.config["outputInstanceDir"] = outputInstanceDir
+                self.saveConfig()
+            saveOimReportToXmlInstance(modelXbrl.modelDocument, instanceFile)
+            self.showStatus(_("Saved XBRL instance: {0}").format(os.path.basename(instanceFile)))
+
     def showFormulaOutputInstance(self, priorOutputInstance, currentOutputInstance):
         currentAction = "closing prior formula output instance"
         try:
@@ -1355,6 +1379,12 @@ class CntlrWinMain (Cntlr.Cntlr):
         self.saveConfig()
         self.setValidateTooltipText()
 
+    def setValidateXmlOim(self, *args):
+        self.modelManager.validateXmlOim = self.validateXmlOim.get()
+        self.config["validateXmlOim"] = self.modelManager.validateXmlOim
+        self.saveConfig()
+        self.setValidateTooltipText()
+
     def setCollectProfileStats(self, *args):
         self.modelManager.collectProfileStats = self.collectProfileStats.get()
         self.config["collectProfileStats"] = self.modelManager.collectProfileStats
@@ -1416,7 +1446,7 @@ class CntlrWinMain (Cntlr.Cntlr):
         if messageCode and messageCode not in message: # prepend message code
             message = "[{}] {}".format(messageCode, message)
         if refs:
-            message += " - " + Cntlr.logRefsFileLines(refs)
+            message += " - " + logRefsFileLines(refs)
         elif file:
             if isinstance(file, (tuple,list,set)):
                 message += " - " + ", ".join(file)
