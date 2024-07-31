@@ -372,12 +372,13 @@ def runOptionsAndGetResult(
             plugins = options.plugins.split("|") if options.plugins else []
             if entryIsOIM:
                 addLogToZip = True
-            if getattr(options, "saveOIMinstance", "").rpartition(".")[2] in ("json", "csv", "xlsx"):
-                if "saveLoadableOIM" not in plugins:
-                    plugins.append("saveLoadableOIM")
-                addLogToZip = True
-                setattr(options, "saveLoadableOIM", getattr(options, "saveOIMinstance"))
-                setattr(options, "saveOIMinstance", None) # this parameter is for saving xBRL-XML when loaded from JSON/CSV
+            # raise NotImplementedError("saveOIMinstance Disabled due to it causing buggy behavior!")
+            # if getattr(options, "saveOIMinstance", "").rpartition(".")[2] in ("json", "csv", "xlsx"):
+                # if "saveLoadableOIM" not in plugins:
+                #     plugins.append("saveLoadableOIM")
+                # addLogToZip = True
+                # setattr(options, "saveLoadableOIM", getattr(options, "saveOIMinstance"))
+                # setattr(options, "saveOIMinstance", None) # this parameter is for saving xBRL-XML when loaded from JSON/CSV
             options.plugins = "|".join(p for p in plugins if p) or None # ignore empty string plugin names
     else:
         responseZipStream = None
